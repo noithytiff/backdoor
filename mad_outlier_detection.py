@@ -17,15 +17,21 @@ from keras.preprocessing import image
 ##############################
 
 RESULT_DIR = 'results'  # directory for storing results
-IMG_FILENAME_TEMPLATE = 'gtsrb_visualize_%s_label_%d.png'  # image filename template for visualization results
+# image filename template for visualization results
+IMG_FILENAME_TEMPLATE = 'mnist_visualize_%s_label_%d.png'
+
+CHANNELS_FIRST = True
 
 # input size
-IMG_ROWS = 32
-IMG_COLS = 32
-IMG_COLOR = 3
-INPUT_SHAPE = (IMG_ROWS, IMG_COLS, IMG_COLOR)
+IMG_ROWS = 28
+IMG_COLS = 28
+IMG_COLOR = 1
+if CHANNELS_FIRST:
+    INPUT_SHAPE = (IMG_ROWS, IMG_COLS, IMG_COLOR)
+else:
+    INPUT_SHAPE = (IMG_COLOR, IMG_ROWS, IMG_COLS)
 
-NUM_CLASSES = 43  # total number of classes in the model
+NUM_CLASSES = 10  # total number of classes in the model
 
 ##############################
 #      END PARAMETERS        #
@@ -73,7 +79,10 @@ def analyze_pattern_norm_dist():
                 target_size=INPUT_SHAPE)
             mask = image.img_to_array(img)
             mask /= 255
-            mask = mask[:, :, 0]
+            if CHANNELS_FIRST:
+                mask = mask[0, :, :]
+            else:
+                mask = mask[:, :, 0]
 
             mask_flatten.append(mask.flatten())
 

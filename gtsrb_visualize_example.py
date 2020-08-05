@@ -14,6 +14,7 @@ random.seed(123)
 np.random.seed(123)
 set_random_seed(123)
 
+import keras
 from keras.models import load_model
 from keras.preprocessing.image import ImageDataGenerator
 
@@ -31,21 +32,27 @@ DEVICE = '3'  # specify which GPU to use
 DATA_DIR = 'data'  # data folder
 DATA_FILE = 'gtsrb_dataset_int.h5'  # dataset file
 MODEL_DIR = 'models'  # model directory
-MODEL_FILENAME = 'gtsrb_bottom_right_white_4_target_33.h5'  # model file
+MODEL_FILENAME = 'gtsrb_ch_last.h5'  # model file
 RESULT_DIR = 'results'  # directory for storing results
 # image filename template for visualization results
 IMG_FILENAME_TEMPLATE = 'gtsrb_visualize_%s_label_%d.png'
+CHANNELS_FIRST = True
 
 # input size
 IMG_ROWS = 32
 IMG_COLS = 32
 IMG_COLOR = 3
-INPUT_SHAPE = (IMG_ROWS, IMG_COLS, IMG_COLOR)
+if CHANNELS_FIRST:
+    INPUT_SHAPE = (IMG_COLOR, IMG_ROWS, IMG_COLS)
+else:
+    INPUT_SHAPE = (IMG_ROWS, IMG_COLS, IMG_COLOR)
 
 NUM_CLASSES = 43  # total number of classes in the model
-Y_TARGET = 33  # (optional) infected target label, used for prioritizing label scanning
+# (optional) infected target label, used for prioritizing label scanning
+Y_TARGET = 28
 
-INTENSITY_RANGE = 'raw'  # preprocessing method for the task, GTSRB uses raw pixel intensities
+# preprocessing method for the task, GTSRB uses raw pixel intensities
+INTENSITY_RANGE = 'raw'
 
 # parameters for optimization
 BATCH_SIZE = 32  # batch size used for optimization
@@ -69,7 +76,12 @@ EARLY_STOP_PATIENCE = 5 * PATIENCE  # patience for early stop
 # the following part is not used in our experiment
 # but our code implementation also supports super-pixel mask
 UPSAMPLE_SIZE = 1  # size of the super pixel
-MASK_SHAPE = np.ceil(np.array(INPUT_SHAPE[0:2], dtype=float) / UPSAMPLE_SIZE)
+if CHANNELS_FIRST:
+    MASK_SHAPE = np.ceil(
+        np.array(INPUT_SHAPE[1:], dtype=float) / UPSAMPLE_SIZE)
+else:
+    MASK_SHAPE = np.ceil(
+        np.array(INPUT_SHAPE[0:2], dtype=float) / UPSAMPLE_SIZE)
 MASK_SHAPE = MASK_SHAPE.astype(int)
 
 # parameters of the original injected trigger
@@ -88,6 +100,9 @@ MASK_SHAPE = MASK_SHAPE.astype(int)
 #      END PARAMETERS        #
 ##############################
 
+if CHANNELS_FIRST:
+    keras.backend.set_image_data_format('channels_first')
+
 
 def load_dataset(data_file=('%s/%s' % (DATA_DIR, DATA_FILE))):
 
@@ -96,6 +111,9 @@ def load_dataset(data_file=('%s/%s' % (DATA_DIR, DATA_FILE))):
     X_test = np.array(dataset['X_test'], dtype='float32')
     Y_test = np.array(dataset['Y_test'], dtype='float32')
 
+    if CHANNELS_FIRST:
+        # X_test = np.moveaxis(X_test, -1, 1)
+        X_test = np.rollaxis(X_test, 3, 1)
     print('X_test shape %s' % str(X_test.shape))
     print('Y_test shape %s' % str(Y_test.shape))
 
@@ -156,11 +174,20 @@ def save_pattern(pattern, mask, y_target):
     img_filename = (
         '%s/%s' % (RESULT_DIR,
                    IMG_FILENAME_TEMPLATE % ('mask', y_target)))
-    utils_backdoor.dump_image(np.expand_dims(mask, axis=2) * 255,
-                              img_filename,
-                              'png')
+    if CHANNELS_FIRST:
+        utils_backdoor.dump_image(np.expand_dims(mask, axis=0) * 255,
+                                  img_filename,
+                                  'png')
 
-    fusion = np.multiply(pattern, np.expand_dims(mask, axis=2))
+    else:
+        utils_backdoor.dump_image(np.expand_dims(mask, axis=2) * 255,
+                                  img_filename,
+                                  'png')
+
+    if CHANNELS_FIRST:
+        fusion = np.multiply(pattern, np.expand_dims(mask, axis=0))
+    else:
+        fusion = np.multiply(pattern, np.expand_dims(mask, axis=2))
     img_filename = (
         '%s/%s' % (RESULT_DIR,
                    IMG_FILENAME_TEMPLATE % ('fusion', y_target)))
@@ -183,7 +210,7 @@ def gtsrb_visualize_label_scan_bottom_right_white_4():
     # initialize visualizer
     visualizer = Visualizer(
         model, intensity_range=INTENSITY_RANGE, regularization=REGULARIZATION,
-        input_shape=INPUT_SHAPE,
+        input_shape=INPUT_SHAPE, channels_first=CHANNELS_FIRST,
         init_cost=INIT_COST, steps=STEPS, lr=LR, num_classes=NUM_CLASSES,
         mini_batch=MINI_BATCH,
         upsample_size=UPSAMPLE_SIZE,
@@ -214,7 +241,6 @@ def gtsrb_visualize_label_scan_bottom_right_white_4():
 
 
 def main():
-
     os.environ["CUDA_VISIBLE_DEVICES"] = DEVICE
     utils_backdoor.fix_gpu_memory()
     gtsrb_visualize_label_scan_bottom_right_white_4()

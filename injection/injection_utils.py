@@ -16,36 +16,54 @@ class BackdoorCall(keras.callbacks.Callback):
         self.adv_gen = adv_gen
 
     def on_epoch_end(self, epoch, logs=None):
-        _, clean_acc = self.model.evaluate(self.clean_X, self.clean_Y, verbose=0)
-        _, attack_acc = self.model.evaluate_generator(self.adv_gen, steps=100, verbose=0)
-        print("Epoch: {} - Clean Acc {:.4f} - Backdoor Success Rate {:.4f}".format(epoch, clean_acc, attack_acc))
+        _, clean_acc = self.model.evaluate(
+            self.clean_X, self.clean_Y, verbose=0)
+        _, attack_acc = self.model.evaluate_generator(
+            self.adv_gen, steps=100, verbose=0)
+        print("Epoch: {} - Clean Acc {:.4f} - Backdoor Success Rate {:.4f}".format(epoch,
+                                                                                   clean_acc, attack_acc))
 
 
-def construct_mask_box(target_ls, image_shape, pattern_size=3, margin=1):
+def construct_mask_box(target_ls, image_shape, pattern_size=3, margin=1, channels_first=False):
     total_ls = {}
     for y_target in target_ls:
         cur_pattern_ls = []
-        if image_shape[2] == 1:
-            mask, pattern = construct_mask_corner(image_row=image_shape[0],
-                                                  image_col=image_shape[1],
-                                                  channel_num=image_shape[2],
-                                                  pattern_size=pattern_size, margin=margin)
+        if channels_first:
+            mask, pattern = construct_mask_corner(image_row=image_shape[1],
+                                                  image_col=image_shape[2],
+                                                  channel_num=image_shape[0],
+                                                  pattern_size=pattern_size,
+                                                  margin=margin,
+                                                  channels_first=channels_first)
         else:
             mask, pattern = construct_mask_corner(image_row=image_shape[0],
                                                   image_col=image_shape[1],
                                                   channel_num=image_shape[2],
-                                                  pattern_size=pattern_size, margin=margin)
+                                                  pattern_size=pattern_size,
+                                                  margin=margin,
+                                                  channels_first=channels_first)
         cur_pattern_ls.append([mask, pattern])
         total_ls[y_target] = cur_pattern_ls
     return total_ls
 
 
-def construct_mask_corner(image_row=32, image_col=32, pattern_size=4, margin=1, channel_num=3):
-    mask = np.zeros((image_row, image_col, channel_num))
-    pattern = np.zeros((image_row, image_col, channel_num))
+def construct_mask_corner(image_row=32, image_col=32, pattern_size=4, margin=1, channel_num=3, channels_first=False):
+    if channels_first:
+        mask = np.zeros((channel_num, image_row, image_col))
+        pattern = np.zeros((channel_num, image_row, image_col))
+    else:
+        mask = np.zeros((image_row, image_col, channel_num))
+        pattern = np.zeros((image_row, image_col, channel_num))
 
-    mask[image_row - margin - pattern_size:image_row - margin, image_col - margin - pattern_size:image_col - margin,
-    :] = 1
-    pattern[image_row - margin - pattern_size:image_row - margin,
-    image_col - margin - pattern_size:image_col - margin, :] = [255., 255., 255.]
+    if channels_first:
+        mask[:, image_row - margin - pattern_size:image_row - margin,
+             image_col - margin - pattern_size:image_col - margin] = 1
+        pattern[:, image_row - margin - pattern_size:image_row - margin,
+                image_col - margin - pattern_size:image_col - margin] = 255.
+
+    else:
+        mask[image_row - margin - pattern_size:image_row - margin, image_col - margin - pattern_size:image_col - margin,
+             :] = 1
+        pattern[image_row - margin - pattern_size:image_row - margin,
+                image_col - margin - pattern_size:image_col - margin, :] = [255., 255., 255.]
     return mask, pattern

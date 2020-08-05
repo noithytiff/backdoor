@@ -9,6 +9,7 @@ import os
 import random
 import sys
 
+import tensorflow as tf
 import keras
 import numpy as np
 from keras.layers import Conv2D, MaxPooling2D, Dense, Flatten, Dropout
@@ -20,20 +21,30 @@ from injection_utils import *
 
 DATA_DIR = '../data'  # data folder
 DATA_FILE = 'gtsrb_dataset.h5'  # dataset file
+CHANNELS_FIRST = True
+DEVICE = '3'
+
+if CHANNELS_FIRST:
+    keras.backend.set_image_data_format('channels_first')
 
 TARGET_LS = [28]
 NUM_LABEL = len(TARGET_LS)
-MODEL_FILEPATH = 'gtsrb_backdoor.h5'  # model file
+MODEL_FILEPATH = 'gtsrb_ch_last.h5'  # model file
 # LOAD_TRAIN_MODEL = 0
 NUM_CLASSES = 43
 PER_LABEL_RARIO = 0.1
-INJECT_RATIO = (PER_LABEL_RARIO * NUM_LABEL) / (PER_LABEL_RARIO * NUM_LABEL + 1)
+INJECT_RATIO = (PER_LABEL_RARIO * NUM_LABEL) / \
+    (PER_LABEL_RARIO * NUM_LABEL + 1)
 NUMBER_IMAGES_RATIO = 1 / (1 - INJECT_RATIO)
 PATTERN_PER_LABEL = 1
 INTENSITY_RANGE = "raw"
-IMG_SHAPE = (32, 32, 3)
+if CHANNELS_FIRST:
+    IMG_SHAPE = (3, 32, 32)
+else:
+    IMG_SHAPE = (32, 32, 3)
 BATCH_SIZE = 32
-PATTERN_DICT = construct_mask_box(target_ls=TARGET_LS, image_shape=IMG_SHAPE, pattern_size=4, margin=1)
+PATTERN_DICT = construct_mask_box(
+    target_ls=TARGET_LS, image_shape=IMG_SHAPE, pattern_size=4, margin=1, channels_first=CHANNELS_FIRST)
 
 
 def load_dataset(data_file=('%s/%s' % (DATA_DIR, DATA_FILE))):
@@ -42,18 +53,25 @@ def load_dataset(data_file=('%s/%s' % (DATA_DIR, DATA_FILE))):
             "The data file does not exist. Please download the file and put in data/ directory from https://drive.google.com/file/d/1kcveaJC3Ra-XDuaNqHzYeomMvU8d1npj/view?usp=sharing")
         exit(1)
 
-    dataset = utils_backdoor.load_dataset(data_file, keys=['X_train', 'Y_train', 'X_test', 'Y_test'])
+    dataset = utils_backdoor.load_dataset(
+        data_file, keys=['X_train', 'Y_train', 'X_test', 'Y_test'])
 
     X_train = dataset['X_train']
     Y_train = dataset['Y_train']
     X_test = dataset['X_test']
     Y_test = dataset['Y_test']
+    if CHANNELS_FIRST:
+        X_train = np.rollaxis(X_train, 3, 1)
+        X_test = np.rollaxis(X_test, 3, 1)
 
     return X_train, Y_train, X_test, Y_test
 
 
 def load_traffic_sign_model(base=32, dense=512, num_classes=43):
-    input_shape = (32, 32, 3)
+    if CHANNELS_FIRST:
+        input_shape = (3, 32, 32)
+    else:
+        input_shape = (32, 32, 3)
     model = Sequential()
     model.add(Conv2D(base, (3, 3), padding='same',
                      input_shape=input_shape,
@@ -81,7 +99,8 @@ def load_traffic_sign_model(base=32, dense=512, num_classes=43):
     model.add(Dense(num_classes, activation='softmax'))
 
     opt = keras.optimizers.adam(lr=0.001, decay=1 * 10e-5)
-    model.compile(loss='categorical_crossentropy', optimizer=opt, metrics=['accuracy'])
+    model.compile(loss='categorical_crossentropy',
+                  optimizer=opt, metrics=['accuracy'])
 
     return model
 
@@ -134,8 +153,10 @@ def inject_backdoor():
     model = load_traffic_sign_model()  # Build a CNN model
 
     base_gen = DataGenerator(TARGET_LS)
-    test_adv_gen = base_gen.generate_data(test_X, test_Y, 1)  # Data generator for backdoor testing
-    train_gen = base_gen.generate_data(train_X, train_Y, INJECT_RATIO)  # Data generator for backdoor training
+    # Data generator for backdoor testing
+    test_adv_gen = base_gen.generate_data(test_X, test_Y, 1)
+    # Data generator for backdoor training
+    train_gen = base_gen.generate_data(train_X, train_Y, INJECT_RATIO)
 
     cb = BackdoorCall(test_X, test_Y, test_adv_gen)
     number_images = NUMBER_IMAGES_RATIO * len(train_Y)
@@ -146,9 +167,13 @@ def inject_backdoor():
     model.save(MODEL_FILEPATH)
 
     loss, acc = model.evaluate(test_X, test_Y, verbose=0)
-    loss, backdoor_acc = model.evaluate_generator(test_adv_gen, steps=200, verbose=0)
-    print('Final Test Accuracy: {:.4f} | Final Backdoor Accuracy: {:.4f}'.format(acc, backdoor_acc))
+    loss, backdoor_acc = model.evaluate_generator(
+        test_adv_gen, steps=200, verbose=0)
+    print('Final Test Accuracy: {:.4f} | Final Backdoor Accuracy: {:.4f}'.format(
+        acc, backdoor_acc))
 
 
 if __name__ == '__main__':
+    os.environ["CUDA_VISIBLE_DEVICES"] = DEVICE
+    utils_backdoor.fix_gpu_memory()
     inject_backdoor()

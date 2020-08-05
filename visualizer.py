@@ -4,6 +4,7 @@
 # @Author  : Bolun Wang (bolunwang@cs.ucsb.edu)
 # @Link    : http://cs.ucsb.edu/~bolunwang
 
+import tensorflow as tf
 import numpy as np
 from keras import backend as K
 
@@ -28,6 +29,8 @@ class Visualizer:
     # imagenet: imagenet mean centering
     # inception: [-1, 1]
     INTENSITY_RANGE = 'raw'
+    # Channel first or last.
+    CHANNELS_FIRST = False
     # type of regularization of the mask
     REGULARIZATION = 'l1'
     # threshold of attack success rate for dynamically changing cost
@@ -74,6 +77,7 @@ class Visualizer:
 
     def __init__(self, model, intensity_range, regularization, input_shape,
                  init_cost, steps, mini_batch, lr, num_classes,
+                 channels_first=CHANNELS_FIRST,
                  upsample_size=UPSAMPLE_SIZE,
                  attack_succ_threshold=ATTACK_SUCC_THRESHOLD,
                  patience=PATIENCE, cost_multiplier=COST_MULTIPLIER,
@@ -96,6 +100,7 @@ class Visualizer:
         self.intensity_range = intensity_range
         self.regularization = regularization
         self.input_shape = input_shape
+        self.channels_first = channels_first
         self.init_cost = init_cost
         self.steps = steps
         self.mini_batch = mini_batch
@@ -125,13 +130,20 @@ class Visualizer:
         self.tmp_dir = tmp_dir
         self.raw_input_flag = raw_input_flag
 
-        mask_size = np.ceil(np.array(input_shape[0:2], dtype=float) /
-                            upsample_size)
+        if self.channels_first:
+            mask_size = np.ceil(np.array(input_shape[1:], dtype=float) /
+                                upsample_size)
+        else:
+            mask_size = np.ceil(np.array(input_shape[0:2], dtype=float) /
+                                upsample_size)
         mask_size = mask_size.astype(int)
         self.mask_size = mask_size
         mask = np.zeros(self.mask_size)
         pattern = np.zeros(input_shape)
-        mask = np.expand_dims(mask, axis=2)
+        if self.channels_first:
+            mask = np.expand_dims(mask, axis=0)
+        else:
+            mask = np.expand_dims(mask, axis=2)
 
         mask_tanh = np.zeros_like(mask)
         pattern_tanh = np.zeros_like(pattern)
@@ -141,18 +153,29 @@ class Visualizer:
         mask_tensor_unrepeat = (K.tanh(self.mask_tanh_tensor) /
                                 (2 - self.epsilon) +
                                 0.5)
-        mask_tensor_unexpand = K.repeat_elements(
-            mask_tensor_unrepeat,
-            rep=self.img_color,
-            axis=2)
+        if self.channels_first:
+            mask_tensor_unexpand = K.repeat_elements(
+                mask_tensor_unrepeat,
+                rep=self.img_color,
+                axis=0)
+        else:
+            mask_tensor_unexpand = K.repeat_elements(
+                mask_tensor_unrepeat,
+                rep=self.img_color,
+                axis=2)
         self.mask_tensor = K.expand_dims(mask_tensor_unexpand, axis=0)
         upsample_layer = UpSampling2D(
             size=(self.upsample_size, self.upsample_size))
         mask_upsample_tensor_uncrop = upsample_layer(self.mask_tensor)
         uncrop_shape = K.int_shape(mask_upsample_tensor_uncrop)[1:]
-        cropping_layer = Cropping2D(
-            cropping=((0, uncrop_shape[0] - self.input_shape[0]),
-                      (0, uncrop_shape[1] - self.input_shape[1])))
+        if self.channels_first:
+            cropping_layer = Cropping2D(
+                cropping=((0, uncrop_shape[1] - self.input_shape[1]),
+                          (0, uncrop_shape[2] - self.input_shape[2])))
+        else:
+            cropping_layer = Cropping2D(
+                cropping=((0, uncrop_shape[0] - self.input_shape[0]),
+                          (0, uncrop_shape[1] - self.input_shape[1])))
         self.mask_upsample_tensor = cropping_layer(
             mask_upsample_tensor_uncrop)
         reverse_mask_tensor = (K.ones_like(self.mask_upsample_tensor) -
@@ -228,7 +251,19 @@ class Visualizer:
         X_adv_tensor = keras_preprocess(X_adv_raw_tensor, self.intensity_range)
 
         output_tensor = model(X_adv_tensor)
+
         y_true_tensor = K.placeholder(model.output_shape)
+
+        # TODO: remove quick fixes.
+        # output of mnist is (batch, 1, 10), so oddly we need to squeeze.
+        # The output is also before softmax.
+        if self.intensity_range == 'mnist':
+            output_tensor = K.softmax(output_tensor)
+            output_tensor = K.squeeze(output_tensor, axis=1)
+            y_true_tensor = K.squeeze(y_true_tensor, axis=1)
+            print(output_tensor.shape)
+            print(y_true_tensor.shape)
+
 
         self.loss_acc = categorical_accuracy(output_tensor, y_true_tensor)
 
@@ -282,13 +317,18 @@ class Visualizer:
         pattern = np.array(pattern_init)
         mask = np.clip(mask, self.mask_min, self.mask_max)
         pattern = np.clip(pattern, self.color_min, self.color_max)
-        mask = np.expand_dims(mask, axis=2)
+        if self.channels_first:
+            mask = np.expand_dims(mask, axis=0)
+        else:
+            mask = np.expand_dims(mask, axis=2)
 
         # convert to tanh space
         mask_tanh = np.arctanh((mask - 0.5) * (2 - self.epsilon))
         pattern_tanh = np.arctanh((pattern / 255.0 - 0.5) * (2 - self.epsilon))
         print('mask_tanh', np.min(mask_tanh), np.max(mask_tanh))
         print('pattern_tanh', np.min(pattern_tanh), np.max(pattern_tanh))
+
+
 
         K.set_value(self.mask_tanh_tensor, mask_tanh)
         K.set_value(self.pattern_tanh_tensor, pattern_tanh)
@@ -375,9 +415,15 @@ class Visualizer:
             # check to save best mask or not
             if avg_loss_acc >= self.attack_succ_threshold and avg_loss_reg < reg_best:
                 mask_best = K.eval(self.mask_tensor)
-                mask_best = mask_best[0, ..., 0]
+                if self.channels_first:
+                    mask_best = mask_best[0, 0, ...]
+                else:
+                    mask_best = mask_best[0, ..., 0]
                 mask_upsample_best = K.eval(self.mask_upsample_tensor)
-                mask_upsample_best = mask_upsample_best[0, ..., 0]
+                if self.channels_first:
+                    mask_upsample_best = mask_upsample_best[0, 0, ...]
+                else:
+                    mask_upsample_best = mask_upsample_best[0, ..., 0]
                 pattern_best = K.eval(self.pattern_raw_tensor)
                 reg_best = avg_loss_reg
 
@@ -455,9 +501,15 @@ class Visualizer:
         # save the final version
         if mask_best is None or self.save_last:
             mask_best = K.eval(self.mask_tensor)
-            mask_best = mask_best[0, ..., 0]
+            if self.channels_first:
+                mask_best = mask_best[0, 0, ...]
+            else:
+                mask_best = mask_best[0, ..., 0]
             mask_upsample_best = K.eval(self.mask_upsample_tensor)
-            mask_upsample_best = mask_upsample_best[0, ..., 0]
+            if self.channels_first:
+                mask_upsample_best = mask_upsample_best[0, 0, ...]
+            else:
+                mask_upsample_best = mask_upsample_best[0, ..., 0]
             pattern_best = K.eval(self.pattern_raw_tensor)
 
         if self.return_logs:

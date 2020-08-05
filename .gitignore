@@ -1,3 +1,6 @@
 
 results
 *.json
+*.hdf5
+*.h5
+*__pycache__*
